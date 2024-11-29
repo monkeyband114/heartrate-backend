@@ -1,12 +1,17 @@
 const express = require("express");
-const http = require("http");
-const WebSocket = require("ws");
+const { createServer } = require("http");
+const { Server } = require("socket.io");
 const cors = require("cors");
 const fs = require("fs").promises;
 
 const app = express();
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+const httpServer = createServer(app);
+const io = new Server(httpServer, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"],
+  },
+});
 
 app.use(cors());
 
@@ -39,26 +44,27 @@ async function getLatestHeartRate() {
   return data.heartRates[data.heartRates.length - 1] || { value: 0 };
 }
 
-wss.on("connection", (ws) => {
-  console.log("ESP8266 connected");
+// Socket.IO connection handling
+io.on("connection", (socket) => {
+  console.log("Client connected");
 
-  ws.on("message", async (message) => {
+  socket.on("heartRate", async (data) => {
     try {
-      const data = JSON.parse(message);
-      if (data.heartRate) {
-        console.log("Received heart rate:", data.heartRate);
-        await saveHeartRate(data.heartRate);
-      }
+      console.log("Received heart rate:", data.value);
+      await saveHeartRate(data.value);
+      // Broadcast the new heart rate to all connected clients
+      io.emit("heartRateUpdate", { heartRate: data.value });
     } catch (error) {
-      console.error("Error parsing message:", error);
+      console.error("Error handling heart rate:", error);
     }
   });
 
-  ws.on("close", () => {
-    console.log("ESP8266 disconnected");
+  socket.on("disconnect", () => {
+    console.log("Client disconnected");
   });
 });
 
+// REST endpoint for getting the latest heart rate
 app.get("/heart-rate", async (req, res) => {
   try {
     const latestHeartRate = await getLatestHeartRate();
@@ -73,7 +79,7 @@ const PORT = process.env.PORT || 3001;
 
 async function startServer() {
   await initDB();
-  server.listen(PORT, () => {
+  httpServer.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
   });
 }
