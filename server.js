@@ -1,106 +1,81 @@
 const express = require("express");
+const http = require("http");
+const WebSocket = require("ws");
 const cors = require("cors");
 const fs = require("fs").promises;
-const path = require("path");
 
 const app = express();
-const port = process.env.PORT || 3001;
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
 
 app.use(cors());
-app.use(express.json());
 
-const dbPath = path.join(__dirname, "db.json");
+const DB_FILE = "db.json";
 
 // Initialize db.json if it doesn't exist
 async function initDB() {
   try {
-    await fs.access(dbPath);
-  } catch (error) {
-    await fs.writeFile(dbPath, JSON.stringify({ sensorData: [] }));
+    await fs.access(DB_FILE);
+  } catch {
+    await fs.writeFile(DB_FILE, JSON.stringify({ heartRates: [] }));
   }
 }
 
-// Endpoint for ESP8266 to send data
-app.post("/sensor-data", async (req, res) => {
-  const sensorData = {
-    ...req.body,
+async function saveHeartRate(heartRate) {
+  const data = JSON.parse(await fs.readFile(DB_FILE, "utf8"));
+  data.heartRates.push({
     timestamp: new Date().toISOString(),
-  };
-
-  try {
-    const data = JSON.parse(await fs.readFile(dbPath, "utf-8"));
-    data.sensorData.push(sensorData);
-    // Keep only the last 100 readings
-    if (data.sensorData.length > 100) {
-      data.sensorData = data.sensorData.slice(-100);
-    }
-    await fs.writeFile(dbPath, JSON.stringify(data, null, 2));
-    res.status(200).send("Data received and saved");
-  } catch (error) {
-    console.error("Error writing to db.json:", error);
-    res.status(500).send("Error saving data");
-  }
-});
-
-// GET endpoint to retrieve the latest sensor data
-app.get("/latest-data", async (req, res) => {
-  try {
-    const data = JSON.parse(await fs.readFile(dbPath, "utf-8"));
-    const latestData = data.sensorData[data.sensorData.length - 1] || null;
-    res.json(latestData);
-  } catch (error) {
-    console.error("Error reading from db.json:", error);
-    res.status(500).send("Error retrieving data");
-  }
-});
-
-// GET endpoint to retrieve historical data
-app.get("/historical-data", async (req, res) => {
-  try {
-    const data = JSON.parse(await fs.readFile(dbPath, "utf-8"));
-    res.json(data.sensorData);
-  } catch (error) {
-    console.error("Error reading from db.json:", error);
-    res.status(500).send("Error retrieving historical data");
-  }
-});
-
-// SSE endpoint for real-time updates
-app.get("/events", (req, res) => {
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
+    value: heartRate,
   });
+  // Keep only the last 1000 readings
+  if (data.heartRates.length > 1000) {
+    data.heartRates = data.heartRates.slice(-1000);
+  }
+  await fs.writeFile(DB_FILE, JSON.stringify(data, null, 2));
+}
 
-  const sendData = async () => {
+async function getLatestHeartRate() {
+  const data = JSON.parse(await fs.readFile(DB_FILE, "utf8"));
+  return data.heartRates[data.heartRates.length - 1] || { value: 0 };
+}
+
+wss.on("connection", (ws) => {
+  console.log("ESP8266 connected");
+
+  ws.on("message", async (message) => {
     try {
-      const data = JSON.parse(await fs.readFile(dbPath, "utf-8"));
-      const latestData = data.sensorData[data.sensorData.length - 1] || null;
-      res.write(`data: ${JSON.stringify(latestData)}\n\n`);
+      const data = JSON.parse(message);
+      if (data.heartRate) {
+        console.log("Received heart rate:", data.heartRate);
+        await saveHeartRate(data.heartRate);
+      }
     } catch (error) {
-      console.error("Error reading from db.json:", error);
+      console.error("Error parsing message:", error);
     }
-  };
+  });
 
-  // Send data immediately and then every 5 seconds
-  sendData();
-  const intervalId = setInterval(sendData, 5000);
-
-  // Clean up on client disconnect
-  req.on("close", () => {
-    clearInterval(intervalId);
+  ws.on("close", () => {
+    console.log("ESP8266 disconnected");
   });
 });
 
-// Start the server
-initDB()
-  .then(() => {
-    app.listen(port, () => {
-      console.log(`Server running at http://localhost:${port}`);
-    });
-  })
-  .catch((error) => {
-    console.error("Failed to initialize database:", error);
-    process.exit(1);
+app.get("/heart-rate", async (req, res) => {
+  try {
+    const latestHeartRate = await getLatestHeartRate();
+    res.json({ heartRate: latestHeartRate.value });
+  } catch (error) {
+    console.error("Error fetching heart rate:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+const PORT = process.env.PORT || 3001;
+
+async function startServer() {
+  await initDB();
+  server.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
   });
+}
+
+startServer();
