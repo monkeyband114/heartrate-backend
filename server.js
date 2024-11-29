@@ -1,19 +1,11 @@
 const express = require("express");
-const { createServer } = require("http");
-const { Server } = require("socket.io");
 const cors = require("cors");
 const fs = require("fs").promises;
 
 const app = express();
-const httpServer = createServer(app);
-const io = new Server(httpServer, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
-  },
-});
 
 app.use(cors());
+app.use(express.json());
 
 const DB_FILE = "db.json";
 
@@ -44,27 +36,23 @@ async function getLatestHeartRate() {
   return data.heartRates[data.heartRates.length - 1] || { value: 0 };
 }
 
-// Socket.IO connection handling
-io.on("connection", (socket) => {
-  console.log("Client connected");
-
-  socket.on("heartRate", async (data) => {
-    try {
-      console.log("Received heart rate:", data.value);
-      await saveHeartRate(data.value);
-      // Broadcast the new heart rate to all connected clients
-      io.emit("heartRateUpdate", { heartRate: data.value });
-    } catch (error) {
-      console.error("Error handling heart rate:", error);
+// POST endpoint for receiving heart rate data
+app.post("/heart-rate", async (req, res) => {
+  try {
+    const { heartRate } = req.body;
+    if (typeof heartRate !== "number") {
+      return res.status(400).json({ error: "Invalid heart rate data" });
     }
-  });
-
-  socket.on("disconnect", () => {
-    console.log("Client disconnected");
-  });
+    await saveHeartRate(heartRate);
+    console.log("Received heart rate:", heartRate);
+    res.status(200).json({ message: "Heart rate saved successfully" });
+  } catch (error) {
+    console.error("Error saving heart rate:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
-// REST endpoint for getting the latest heart rate
+// GET endpoint for retrieving the latest heart rate
 app.get("/heart-rate", async (req, res) => {
   try {
     const latestHeartRate = await getLatestHeartRate();
@@ -79,7 +67,7 @@ const PORT = process.env.PORT || 3001;
 
 async function startServer() {
   await initDB();
-  httpServer.listen(PORT, () => {
+  app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
   });
 }
